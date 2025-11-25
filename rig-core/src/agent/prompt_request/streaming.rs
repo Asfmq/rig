@@ -288,12 +288,15 @@ where
                                 gen_ai.tool.call.result = tracing::field::Empty
                             );
 
+                            // 首先推送工具调用事件到流中
+                            yield Ok(MultiTurnStreamItem::stream_item(StreamedAssistantContent::ToolCall(tool_call.clone())));
+
                             let res = async {
                                 let tool_span = tracing::Span::current();
                                 if let Some(ref hook) = self.hook {
                                     hook.on_tool_call(&tool_call.function.name, &tool_call.function.arguments.to_string(), cancel_signal.clone()).await;
                                     if cancel_signal.is_cancelled() {
-                                        return Err(StreamingError::Prompt(PromptError::prompt_cancelled(chat_history.read().await.to_vec()).into()));
+                                        return Err((StreamingError::Prompt(PromptError::prompt_cancelled(chat_history.read().await.to_vec()).into()), None as Option<(String, String)>));
                                     }
                                 }
 
@@ -316,22 +319,33 @@ where
                                     .await;
 
                                     if cancel_signal.is_cancelled() {
-                                        return Err(StreamingError::Prompt(PromptError::prompt_cancelled(chat_history.read().await.to_vec()).into()));
+                                        return Err((StreamingError::Prompt(PromptError::prompt_cancelled(chat_history.read().await.to_vec()).into()), None as Option<(String, String)>));
                                     }
                                 }
 
+                                let tool_call_id = tool_call.id.clone();
                                 let tool_call_msg = AssistantContent::ToolCall(tool_call.clone());
 
                                 tool_calls.push(tool_call_msg);
-                                tool_results.push((tool_call.id, tool_call.call_id, tool_result));
+                                tool_results.push((tool_call_id.clone(), tool_call.call_id, tool_result.clone()));
+                                // tracing::info!("工具调用结果 {}", tool_result);
 
                                 did_call_tool = true;
-                                Ok(())
+                                Ok((tool_call_id, tool_result))
                                 // break;
                             }.instrument(tool_span).await;
 
-                            if let Err(e) = res {
-                                yield Err(e);
+                            match res {
+                                Ok((tool_id, tool_result)) => {
+                                    // 推送工具结果到流中
+                                    yield Ok(MultiTurnStreamItem::stream_item(StreamedAssistantContent::ToolResult {
+                                        id: tool_id,
+                                        result: tool_result
+                                    }));
+                                }
+                                Err((e, _)) => {
+                                    yield Err(e);
+                                }
                             }
                         },
                         Ok(StreamedAssistantContent::ToolCallDelta { id, delta }) => {
@@ -344,7 +358,7 @@ where
                                 }
                             }
                         }
-                        Ok(StreamedAssistantContent::Reasoning(rig::message::Reasoning { reasoning, id, signature })) => {
+                       Ok(StreamedAssistantContent::Reasoning(rig::message::Reasoning { reasoning, id, signature })) => {
                             chat_history.write().await.push(rig::message::Message::Assistant {
                                 id: None,
                                 content: OneOrMany::one(AssistantContent::Reasoning(Reasoning {
@@ -353,6 +367,11 @@ where
                             });
                             yield Ok(MultiTurnStreamItem::stream_item(StreamedAssistantContent::Reasoning(rig::message::Reasoning { reasoning, id, signature })));
                             did_call_tool = false;
+                        },
+                        // 处理工具结果（不应该从提供商流中到达这里，只是为了完整性）
+                        Ok(StreamedAssistantContent::ToolResult { id: _, result: _ }) => {
+                            // 工具结果应该在 Agent 层处理，不应该从提供商流中直接到达
+                            // 这里只是为了编译完整性，实际不应该执行
                         },
                         Ok(StreamedAssistantContent::Final(final_resp)) => {
                             if let Some(usage) = final_resp.token_usage() { aggregated_usage += usage; };
@@ -456,15 +475,31 @@ pub async fn stream_to_stdout<R>(
     print!("Response: ");
     while let Some(content) = stream.next().await {
         match content {
+            Ok(MultiTurnStreamItem::StreamItem(StreamedAssistantContent::ToolCall(tool_call))) => {
+                println!("\n[Tool call] {}: {}({})",
+                    tool_call.id,
+                    tool_call.function.name,
+                    tool_call.function.arguments);
+                println!("Response: ");
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            }
+
+            Ok(MultiTurnStreamItem::StreamItem(StreamedAssistantContent::ToolResult { id, result })) => {
+                println!("\n[Tool Result] {}: {}", id, result);
+                print!("Response: ");
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            }
             Ok(MultiTurnStreamItem::StreamItem(StreamedAssistantContent::Text(Text { text }))) => {
-                print!("{text}");
+                // println!("\n[text]");
+                print!("{}", text);
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
             }
             Ok(MultiTurnStreamItem::StreamItem(StreamedAssistantContent::Reasoning(
                 Reasoning { reasoning, .. },
             ))) => {
+                // println!("\n[thinking]");
                 let reasoning = reasoning.join("\n");
-                print!("{reasoning}");
+                print!("{}", reasoning);
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
             }
             Ok(MultiTurnStreamItem::FinalResponse(res)) => {

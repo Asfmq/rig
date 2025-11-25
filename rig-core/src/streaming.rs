@@ -556,6 +556,7 @@ pub enum StreamedAssistantContent<R> {
     Text(Text),
     ToolCall(ToolCall),
     ToolCallDelta { id: String, delta: String },
+    ToolResult { id: String, result: String },
     Reasoning(Reasoning),
     Final(R),
 }
