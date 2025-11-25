@@ -19,7 +19,6 @@ use super::{
 // ================================================================
 // Together AI Embedding API
 // ================================================================
-
 pub const BGE_BASE_EN_V1_5: &str = "BAAI/bge-base-en-v1.5";
 pub const BGE_LARGE_EN_V1_5: &str = "BAAI/bge-large-en-v1.5";
 pub const BERT_BASE_UNCASED: &str = "bert-base-uncased";
@@ -77,6 +76,12 @@ where
     T: HttpClientExt + Default + Clone + Send + 'static,
 {
     const MAX_DOCUMENTS: usize = 1024; // This might need to be adjusted based on Together AI's actual limit
+
+    type Client = Client<T>;
+
+    fn make(client: &Self::Client, model: impl Into<String>, dims: Option<usize>) -> Self {
+        Self::new(client.clone(), model, dims.unwrap_or_default())
+    }
 
     fn ndims(&self) -> usize {
         self.ndims
@@ -138,10 +143,10 @@ impl<T> EmbeddingModel<T>
 where
     T: Default,
 {
-    pub fn new(client: Client<T>, model: &str, ndims: usize) -> Self {
+    pub fn new(client: Client<T>, model: impl Into<String>, ndims: usize) -> Self {
         Self {
             client,
-            model: model.to_string(),
+            model: model.into(),
             ndims,
         }
     }

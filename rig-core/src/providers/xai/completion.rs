@@ -104,10 +104,17 @@ impl<T> CompletionModel<T> {
         Ok(request)
     }
 
-    pub fn new(client: Client<T>, model: &str) -> Self {
+    pub fn new(client: Client<T>, model: impl Into<String>) -> Self {
         Self {
             client,
-            model: model.to_string(),
+            model: model.into(),
+        }
+    }
+
+    pub fn with_model(client: Client<T>, model: &str) -> Self {
+        Self {
+            client,
+            model: model.into(),
         }
     }
 }
@@ -118,6 +125,12 @@ where
 {
     type Response = CompletionResponse;
     type StreamingResponse = openai::StreamingCompletionResponse;
+
+    type Client = Client<T>;
+
+    fn make(client: &Self::Client, model: impl Into<String>) -> Self {
+        Self::new(client.clone(), model)
+    }
 
     #[cfg_attr(feature = "worker", worker::send)]
     async fn completion(
@@ -159,7 +172,7 @@ where
             .map_err(|e| CompletionError::HttpError(e.into()))?;
 
         async move {
-            let response = self.client.http_client.send::<_, Bytes>(req).await?;
+            let response = self.client.http_client().send::<_, Bytes>(req).await?;
             let status = response.status();
             let response_body = response.into_body().into_future().await?.to_vec();
 

@@ -4,15 +4,15 @@ mod audio {
         AudioGenerationError, AudioGenerationModel, AudioGenerationModelDyn,
         AudioGenerationRequest, AudioGenerationResponse,
     };
-    use crate::client::{AsAudioGeneration, ProviderClient};
+    use crate::client::Nothing;
     use std::future::Future;
     use std::sync::Arc;
 
     /// A provider client with audio generation capabilities.
     /// Clone is required for conversions between client types.
-    pub trait AudioGenerationClient: ProviderClient + Clone {
+    pub trait AudioGenerationClient {
         /// The AudioGenerationModel used by the Client
-        type AudioGenerationModel: AudioGenerationModel;
+        type AudioGenerationModel: AudioGenerationModel<Client = Self>;
 
         /// Create an audio generation model with the given name.
         ///
@@ -25,10 +25,12 @@ mod audio {
         ///
         /// let tts = openai.audio_generation_model(openai::TTS_1);
         /// ```
-        fn audio_generation_model(&self, model: &str) -> Self::AudioGenerationModel;
+        fn audio_generation_model(&self, model: impl Into<String>) -> Self::AudioGenerationModel {
+            Self::AudioGenerationModel::make(self, model)
+        }
     }
 
-    pub trait AudioGenerationClientDyn: ProviderClient {
+    pub trait AudioGenerationClientDyn {
         fn audio_generation_model<'a>(&self, model: &str) -> Box<dyn AudioGenerationModelDyn + 'a>;
     }
 
@@ -42,15 +44,6 @@ mod audio {
         }
     }
 
-    impl<T> AsAudioGeneration for T
-    where
-        T: AudioGenerationClientDyn + Clone + 'static,
-    {
-        fn as_audio_generation(&self) -> Option<Box<dyn AudioGenerationClientDyn>> {
-            Some(Box::new(self.clone()))
-        }
-    }
-
     /// Wraps a AudioGenerationModel in a dyn-compatible way for AudioGenerationRequestBuilder.
     #[derive(Clone)]
     pub struct AudioGenerationModelHandle<'a> {
@@ -59,6 +52,15 @@ mod audio {
 
     impl AudioGenerationModel for AudioGenerationModelHandle<'_> {
         type Response = ();
+        type Client = Nothing;
+
+        /// **PANICS**: DynClientBuilder and related features (like this model handle) are being phased out,
+        /// during this transition period some methods will panic when called
+        fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+            panic!(
+                "Function should be unreachable as Self can only be constructed from another 'AudioGenerationModel'"
+            )
+        }
 
         fn audio_generation(
             &self,

@@ -138,13 +138,19 @@ pub struct CompletionModel<T = reqwest::Client> {
 }
 
 impl<T> CompletionModel<T> {
-    pub fn new(client: Client<T>, model: &str) -> Self {
+    pub fn new(client: Client<T>, model: impl Into<String>) -> Self {
         Self {
             client,
-            model: model.to_string(),
+            model: model.into(),
         }
     }
 
+    pub fn with_model(client: Client<T>, model: &str) -> Self {
+        Self {
+            client,
+            model: model.into(),
+        }
+    }
     pub(crate) fn create_completion_request(
         &self,
         completion_request: completion::CompletionRequest,
@@ -204,6 +210,12 @@ where
     type Response = openai::CompletionResponse;
     type StreamingResponse = openai::StreamingCompletionResponse;
 
+    type Client = Client<T>;
+
+    fn make(client: &Self::Client, model: impl Into<String>) -> Self {
+        Self::new(client.clone(), model)
+    }
+
     #[cfg_attr(feature = "worker", worker::send)]
     async fn completion(
         &self,
@@ -233,7 +245,7 @@ where
             tracing::Span::current()
         };
 
-        tracing::debug!(target: "rig::completion", "TogetherAI completion request: {messages_as_json_string}");
+        tracing::debug!(target: "rig::completions", "TogetherAI completion request: {messages_as_json_string}");
 
         let body = serde_json::to_vec(&request)?;
 
@@ -245,12 +257,14 @@ where
             .map_err(|x| CompletionError::HttpError(x.into()))?;
 
         async move {
-            let response = self.client.http_client.send::<_, Bytes>(req).await?;
+            let response = self.client.http_client().send::<_, Bytes>(req).await?;
             let status = response.status();
             let response_body = response.into_body().into_future().await?.to_vec();
 
             if status.is_success() {
-                match serde_json::from_slice::<ApiResponse<openai::CompletionResponse>>(&response_body)? {
+                match serde_json::from_slice::<ApiResponse<openai::CompletionResponse>>(
+                    &response_body,
+                )? {
                     ApiResponse::Ok(response) => {
                         let span = tracing::Span::current();
                         span.record(
@@ -266,14 +280,18 @@ where
                                 usage.total_tokens - usage.prompt_tokens,
                             );
                         }
-                        tracing::debug!(target: "rig::completion", "TogetherAI completion response: {}", serde_json::to_string_pretty(&response)?);
+                        tracing::trace!(
+                            target: "rig::completions",
+                            "TogetherAI completion response: {}",
+                            serde_json::to_string_pretty(&response)?
+                        );
                         response.try_into()
                     }
                     ApiResponse::Error(err) => Err(CompletionError::ProviderError(err.error)),
                 }
             } else {
                 Err(CompletionError::ProviderError(
-                    String::from_utf8_lossy(&response_body).to_string()
+                    String::from_utf8_lossy(&response_body).to_string(),
                 ))
             }
         }

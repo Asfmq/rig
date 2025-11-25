@@ -27,7 +27,6 @@ pub enum ApiResponse<T> {
 // ================================================================
 
 // Conversational LLMs
-
 /// `google/gemma-2-2b-it` completion model
 pub const GEMMA_2: &str = "google/gemma-2-2b-it";
 /// `meta-llama/Meta-Llama-3.1-8B-Instruct` completion model
@@ -649,7 +648,7 @@ impl<T> CompletionModel<T> {
 
         full_history.extend(chat_history);
 
-        let model = self.client.sub_provider.model_identifier(&self.model);
+        let model = self.client.subprovider().model_identifier(&self.model);
 
         let tool_choice = completion_request
             .tool_choice
@@ -683,6 +682,12 @@ where
     type Response = CompletionResponse;
     type StreamingResponse = StreamingCompletionResponse;
 
+    type Client = Client<T>;
+
+    fn make(client: &Self::Client, model: impl Into<String>) -> Self {
+        Self::new(client.clone(), &model.into())
+    }
+
     #[cfg_attr(feature = "worker", worker::send)]
     async fn completion(
         &self,
@@ -709,7 +714,7 @@ where
         let request = self.create_request_body(&completion_request)?;
         span.record_model_input(&request.get("messages"));
 
-        let path = self.client.sub_provider.completion_endpoint(&self.model);
+        let path = self.client.subprovider().completion_endpoint(&self.model);
 
         let request = if let Some(ref params) = completion_request.additional_params {
             json_utils::merge(request, params.clone())

@@ -20,6 +20,7 @@ use crate::message::{
 };
 use crate::one_or_many::string_or_one_or_many;
 
+use crate::wasm_compat::{WasmCompatSend, WasmCompatSync};
 use crate::{OneOrMany, completion, message};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -706,7 +707,14 @@ where
     T: HttpClientExt + Clone + Default + std::fmt::Debug + 'static,
 {
     /// Creates a new [`ResponsesCompletionModel`].
-    pub fn new(client: Client<T>, model: &str) -> Self {
+    pub fn new(client: Client<T>, model: impl Into<String>) -> Self {
+        Self {
+            client,
+            model: model.into(),
+        }
+    }
+
+    pub fn with_model(client: Client<T>, model: &str) -> Self {
         Self {
             client,
             model: model.to_string(),
@@ -715,7 +723,7 @@ where
 
     /// Use the Completions API instead of Responses.
     pub fn completions_api(self) -> crate::providers::openai::completion::CompletionModel<T> {
-        crate::providers::openai::completion::CompletionModel::new(self.client, &self.model)
+        super::completion::CompletionModel::with_model(self.client.completions_api(), &self.model)
     }
 
     /// Attempt to create a completion request from [`crate::completion::CompletionRequest`].
@@ -755,6 +763,7 @@ pub struct CompletionResponse {
     /// The model output (messages, etc will go here)
     pub output: Vec<Output>,
     /// Tools
+    #[serde(default)]
     pub tools: Vec<ResponsesToolDefinition>,
     /// Additional parameters
     #[serde(flatten)]
@@ -1037,12 +1046,23 @@ pub enum OutputRole {
 
 impl<T> completion::CompletionModel for ResponsesCompletionModel<T>
 where
-    T: HttpClientExt + Clone + std::fmt::Debug + Default + Send + 'static,
+    T: HttpClientExt
+        + Clone
+        + std::fmt::Debug
+        + Default
+        + WasmCompatSend
+        + WasmCompatSync
+        + 'static,
 {
     type Response = CompletionResponse;
     type StreamingResponse = StreamingCompletionResponse;
 
-    #[cfg_attr(feature = "worker", worker::send)]
+    type Client = super::Client<T>;
+
+    fn make(client: &Self::Client, model: impl Into<String>) -> Self {
+        Self::new(client.clone(), model)
+    }
+
     async fn completion(
         &self,
         completion_request: crate::completion::CompletionRequest,
@@ -1074,7 +1094,8 @@ where
                 .expect("openai request to successfully turn into a JSON value"),
         );
         let body = serde_json::to_vec(&request)?;
-        tracing::debug!(
+        tracing::trace!(
+            target: "rig::completions",
             "OpenAI Responses API input: {request}",
             request = serde_json::to_string_pretty(&request).unwrap()
         );

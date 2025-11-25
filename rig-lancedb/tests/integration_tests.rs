@@ -107,9 +107,11 @@ async fn vector_search_test() {
     });
 
     // Initialize OpenAI client
-    let openai_client = openai::Client::builder("TEST")
-        .base_url(&server.base_url())
-        .build();
+    let openai_client: openai::Client = openai::Client::builder()
+        .api_key("TEST")
+        .base_url(server.base_url())
+        .build()
+        .unwrap();
 
     // Select an embedding model.
     let model = openai_client.embedding_model(openai::TEXT_EMBEDDING_ADA_002);
@@ -321,9 +323,11 @@ async fn agent_with_dynamic_context_test() {
     });
 
     // Initialize OpenAI client
-    let openai_client = openai::Client::builder("TEST")
-        .base_url(&server.base_url())
-        .build();
+    let openai_client = openai::Client::builder()
+        .api_key("TEST")
+        .base_url(server.base_url())
+        .build()
+        .unwrap();
 
     // Select an embedding model.
     let model = openai_client.embedding_model(openai::TEXT_EMBEDDING_ADA_002);
@@ -392,7 +396,7 @@ async fn agent_with_dynamic_context_test() {
 
     // Build RAG agent with dynamic context
     let agent = openai_client
-        .completion_model("gpt-4o")
+        .completion_model(openai::GPT_4O)
         .completions_api()
         .into_agent_builder()
         .dynamic_context(top_k, vector_store_index)

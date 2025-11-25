@@ -26,25 +26,18 @@ use tracing::{Instrument, info_span};
 
 /// `claude-opus-4-0` completion model
 pub const CLAUDE_4_OPUS: &str = "claude-opus-4-0";
-
 /// `claude-sonnet-4-0` completion model
 pub const CLAUDE_4_SONNET: &str = "claude-sonnet-4-0";
-
 /// `claude-3-7-sonnet-latest` completion model
 pub const CLAUDE_3_7_SONNET: &str = "claude-3-7-sonnet-latest";
-
 /// `claude-3-5-sonnet-latest` completion model
 pub const CLAUDE_3_5_SONNET: &str = "claude-3-5-sonnet-latest";
-
 /// `claude-3-5-haiku-latest` completion model
 pub const CLAUDE_3_5_HAIKU: &str = "claude-3-5-haiku-latest";
-
 /// `claude-3-5-haiku-latest` completion model
 pub const CLAUDE_3_OPUS: &str = "claude-3-opus-latest";
-
 /// `claude-3-sonnet-20240229` completion model
 pub const CLAUDE_3_SONNET: &str = "claude-3-sonnet-20240229";
-
 /// `claude-3-haiku-20240307` completion model
 pub const CLAUDE_3_HAIKU: &str = "claude-3-haiku-20240307";
 
@@ -162,19 +155,7 @@ impl TryFrom<CompletionResponse> for completion::CompletionResponse<CompletionRe
         let content = response
             .content
             .iter()
-            .map(|content| {
-                Ok(match content {
-                    Content::Text { text } => completion::AssistantContent::text(text),
-                    Content::ToolUse { id, name, input } => {
-                        completion::AssistantContent::tool_call(id, name, input.clone())
-                    }
-                    _ => {
-                        return Err(CompletionError::ResponseError(
-                            "Response did not contain a message or tool call".into(),
-                        ));
-                    }
-                })
-            })
+            .map(|content| content.clone().try_into())
             .collect::<Result<Vec<_>, _>>()?;
 
         let choice = OneOrMany::many(content).map_err(|_| {
@@ -574,7 +555,7 @@ impl TryFrom<Content> for message::AssistantContent {
             ),
             _ => {
                 return Err(MessageError::ConversionError(
-                    format!("Unsupported content type for Assistant role: {content:?}").to_owned(),
+                    "Content did not contain a message, tool call, or reasoning".to_owned(),
                 ));
             }
         })
@@ -648,10 +629,7 @@ impl TryFrom<Message> for message::Message {
 }
 
 #[derive(Clone)]
-pub struct CompletionModel<T = reqwest::Client>
-where
-    T: WasmCompatSend,
-{
+pub struct CompletionModel<T = reqwest::Client> {
     pub(crate) client: Client<T>,
     pub model: String,
     pub default_max_tokens: Option<u64>,
@@ -661,11 +639,22 @@ impl<T> CompletionModel<T>
 where
     T: HttpClientExt,
 {
-    pub fn new(client: Client<T>, model: &str) -> Self {
+    pub fn new(client: Client<T>, model: impl Into<String>) -> Self {
+        let model = model.into();
+        let default_max_tokens = calculate_max_tokens(&model);
+
+        Self {
+            client,
+            model,
+            default_max_tokens,
+        }
+    }
+
+    pub fn with_model(client: Client<T>, model: &str) -> Self {
         Self {
             client,
             model: model.to_string(),
-            default_max_tokens: calculate_max_tokens(model),
+            default_max_tokens: Some(calculate_max_tokens_custom(model)),
         }
     }
 }
@@ -673,22 +662,22 @@ where
 /// Anthropic requires a `max_tokens` parameter to be set, which is dependent on the model. If not
 /// set or if set too high, the request will fail. The following values are based on the models
 /// available at the time of writing.
-///
-/// Dev Note: This is really bad design, I'm not sure why they did it like this..
 fn calculate_max_tokens(model: &str) -> Option<u64> {
-    if model.starts_with("claude-opus-4") {
-        Some(32000)
-    } else if model.starts_with("claude-sonnet-4") || model.starts_with("claude-3-7-sonnet") {
-        Some(64000)
-    } else if model.starts_with("claude-3-5-sonnet") || model.starts_with("claude-3-5-haiku") {
-        Some(8192)
-    } else if model.starts_with("claude-3-opus")
-        || model.starts_with("claude-3-sonnet")
-        || model.starts_with("claude-3-haiku")
-    {
-        Some(4096)
-    } else {
-        None
+    match model {
+        CLAUDE_4_OPUS => Some(32_000),
+        CLAUDE_4_SONNET | CLAUDE_3_7_SONNET => Some(64_000),
+        CLAUDE_3_5_SONNET | CLAUDE_3_5_HAIKU => Some(8_192),
+        CLAUDE_3_OPUS | CLAUDE_3_SONNET | CLAUDE_3_HAIKU => Some(4_096),
+        _ => None,
+    }
+}
+
+fn calculate_max_tokens_custom(model: &str) -> u64 {
+    match model {
+        "claude-4-opus" => 32_000,
+        "claude-4-sonnet" | "claude-3.7-sonnet" => 64_000,
+        "claude-3.5-sonnet" | "claude-3.5-haiku" => 8_192,
+        _ => 4_096,
     }
 }
 
@@ -738,6 +727,11 @@ where
 {
     type Response = CompletionResponse;
     type StreamingResponse = StreamingCompletionResponse;
+    type Client = Client<T>;
+
+    fn make(client: &Self::Client, model: impl Into<String>) -> Self {
+        Self::new(client.clone(), model.into())
+    }
 
     #[cfg_attr(feature = "worker", worker::send)]
     async fn completion(
@@ -835,13 +829,9 @@ where
         async move {
             let request: Vec<u8> = serde_json::to_vec(&request)?;
 
-            if let Ok(json_str) = String::from_utf8(request.clone()) {
-                tracing::debug!("Request body:\n{}", json_str);
-            }
-
             let req = self
                 .client
-                .post("/v1/messages")
+                .post("/v1/messages")?
                 .header("Content-Type", "application/json")
                 .body(request)
                 .map_err(|e| CompletionError::HttpError(e.into()))?;
@@ -866,6 +856,11 @@ where
                         span.record_model_output(&completion.content);
                         span.record_response_metadata(&completion);
                         span.record_token_usage(&completion.usage);
+                        tracing::trace!(
+                            target: "rig::completions",
+                            "Anthropic completion response: {}",
+                            serde_json::to_string_pretty(&completion)?
+                        );
                         completion.try_into()
                     }
                     ApiResponse::Error(ApiErrorResponse { message }) => {
